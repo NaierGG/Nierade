@@ -84,38 +84,15 @@ export async function POST(request: NextRequest) {
       const futuresCash = new Prisma.Decimal(String(futures.cashUSDT));
       const now = new Date();
 
-      if (direction === TRANSFER_DIRECTION.SPOT_TO_FUTURES) {
-        if (spotCash.lt(amount)) {
-          throw new TradingError("Insufficient Spot cashUSDT.");
-        }
-
-        const nextSpotCash = spotCash.sub(amount);
-        const nextFuturesCash = futuresCash.add(amount);
-        await Promise.all([
-          tx.account.update({
-            where: { guestId },
-            data: {
-              cashUSDT: nextSpotCash.toNumber(),
-              updatedAt: now
-            }
-          }),
-          tx.futuresAccount.update({
-            where: { guestId },
-            data: {
-              cashUSDT: nextFuturesCash.toNumber(),
-              updatedAt: now
-            }
-          })
-        ]);
-        return;
+      const isSpotToFutures = direction === TRANSFER_DIRECTION.SPOT_TO_FUTURES;
+      const sourceWalletName = isSpotToFutures ? "Spot" : "Futures";
+      const sourceBalance = isSpotToFutures ? spotCash : futuresCash;
+      if (sourceBalance.lt(amount)) {
+        throw new TradingError(`Insufficient ${sourceWalletName} cashUSDT.`);
       }
 
-      if (futuresCash.lt(amount)) {
-        throw new TradingError("Insufficient Futures cashUSDT.");
-      }
-
-      const nextSpotCash = spotCash.add(amount);
-      const nextFuturesCash = futuresCash.sub(amount);
+      const nextSpotCash = isSpotToFutures ? spotCash.sub(amount) : spotCash.add(amount);
+      const nextFuturesCash = isSpotToFutures ? futuresCash.add(amount) : futuresCash.sub(amount);
       await Promise.all([
         tx.account.update({
           where: { guestId },
@@ -132,6 +109,16 @@ export async function POST(request: NextRequest) {
           }
         })
       ]);
+
+      console.info("[wallet-transfer]", {
+        guestId,
+        direction,
+        amount: amount.toString(),
+        prevSpotCashUSDT: spotCash.toString(),
+        prevFuturesCashUSDT: futuresCash.toString(),
+        nextSpotCashUSDT: nextSpotCash.toString(),
+        nextFuturesCashUSDT: nextFuturesCash.toString()
+      });
     });
 
     return NextResponse.json({ ok: true });
