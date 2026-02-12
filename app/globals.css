@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 225 24% 9%;
+  --foreground: 220 20% 96%;
+  --card: 223 21% 12%;
+  --card-foreground: 220 20% 96%;
+  --primary: 193 98% 52%;
+  --primary-foreground: 222 47% 11%;
+  --muted: 224 16% 18%;
+  --muted-foreground: 220 12% 70%;
+  --accent: 223 19% 16%;
+  --accent-foreground: 220 20% 96%;
+  --border: 223 15% 21%;
+  --input: 223 15% 21%;
+  --ring: 193 98% 52%;
+}
+
+* {
+  @apply border-border;
+}
+
+html,
+body {
+  @apply bg-background text-foreground;
+}
+
+body {
+  font-family:
+    "IBM Plex Sans",
+    "Segoe UI",
+    Tahoma,
+    Geneva,
+    Verdana,
+    sans-serif;
+  min-height: 100vh;
+  background-image:
+    radial-gradient(circle at 10% 10%, rgba(31, 148, 255, 0.08), transparent 40%),
+    radial-gradient(circle at 90% 20%, rgba(14, 197, 170, 0.06), transparent 35%);
+}
+
+@keyframes ticker-scroll {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-ticker-scroll {
+  animation: ticker-scroll 32s linear infinite;
+}
+
+@keyframes float-soft {
+  0% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+
+.animate-float-soft {
+  animation: float-soft 6s ease-in-out infinite;
+}

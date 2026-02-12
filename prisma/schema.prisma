@@ -1,0 +1,148 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Guest {
+  id               String            @id
+  userId           String?
+  createdAt        DateTime          @default(now())
+  account          Account?
+  futuresAccount   FuturesAccount?
+  holdings         Holding[]
+  orders           Order[]
+  trades           Trade[]
+  futuresPositions FuturesPosition[]
+  futuresTrades    FuturesTrade[]
+  user             User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  sessions     Session[]
+  guests       Guest[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Account {
+  id           String   @id @default(cuid())
+  guestId      String   @unique
+  cashUSDT     Float    @default(10000)
+  startingCash Float    @default(10000)
+  realizedPnl  Float    @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  guest        Guest    @relation(fields: [guestId], references: [id], onDelete: Cascade)
+}
+
+model Holding {
+  id       String @id @default(cuid())
+  guestId  String
+  symbol   String
+  qty      Float
+  avgPrice Float
+  guest    Guest  @relation(fields: [guestId], references: [id], onDelete: Cascade)
+
+  @@unique([guestId, symbol])
+  @@index([guestId])
+}
+
+model Order {
+  id         String    @id @default(cuid())
+  guestId    String
+  symbol     String
+  side       String
+  type       String
+  qty        Float
+  limitPrice Float?
+  status     String    @default("OPEN")
+  filledAt   DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  guest      Guest     @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  trades     Trade[]
+
+  @@index([guestId, status])
+  @@index([guestId, createdAt])
+}
+
+model Trade {
+  id        String   @id @default(cuid())
+  guestId   String
+  symbol    String
+  side      String
+  qty       Float
+  price     Float
+  orderId   String?
+  createdAt DateTime @default(now())
+  guest     Guest    @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  order     Order?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([guestId, createdAt])
+  @@index([orderId])
+}
+
+model FuturesAccount {
+  id        String   @id @default(cuid())
+  guestId   String   @unique
+  cashUSDT  Float    @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  guest Guest @relation(fields: [guestId], references: [id], onDelete: Cascade)
+}
+
+model FuturesPosition {
+  id               String   @id @default(cuid())
+  guestId          String
+  symbol           String
+  side             String
+  leverage         Int
+  margin           Float
+  entryPrice       Float
+  qty              Float
+  liquidationPrice Float
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  guest Guest @relation(fields: [guestId], references: [id], onDelete: Cascade)
+
+  @@unique([guestId, symbol])
+}
+
+model FuturesTrade {
+  id          String   @id @default(cuid())
+  guestId     String
+  symbol      String
+  side        String
+  action      String
+  qty         Float
+  price       Float
+  fee         Float
+  realizedPnl Float
+  createdAt   DateTime @default(now())
+
+  guest Guest @relation(fields: [guestId], references: [id], onDelete: Cascade)
+
+  @@index([guestId, createdAt])
+}
