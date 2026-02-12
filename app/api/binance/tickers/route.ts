@@ -1,11 +1,4 @@
-import { NextResponse } from "next/server";
-
-interface Binance24hTicker {
-  symbol?: string;
-  lastPrice?: string;
-  priceChangePercent?: string;
-  quoteVolume?: string;
-}
+import { NextRequest, NextResponse } from "next/server";
 
 interface TickerItem {
   symbol: string;
@@ -14,46 +7,21 @@ interface TickerItem {
   quoteVolume: number;
 }
 
-const LEVERAGED_SUFFIX_RE = /(UP|DOWN|BULL|BEAR|[0-9]+L|[0-9]+S)USDT$/;
-
-function isTargetSymbol(symbol: string) {
-  return symbol.endsWith("USDT") && !LEVERAGED_SUFFIX_RE.test(symbol);
-}
-
-function toFiniteNumber(value: string | undefined) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const response = await fetch("https://api.binance.com/api/v3/ticker/24hr", {
+    const upstream = await fetch(`${request.nextUrl.origin}/api/markets`, {
       cache: "no-store"
     });
-    if (!response.ok) {
-      throw new Error(`ticker/24hr failed: ${response.status}`);
+    const body = (await upstream.json().catch(() => ({}))) as {
+      ok?: boolean;
+      data?: TickerItem[];
+      error?: string;
+    };
+    if (!upstream.ok || body.ok !== true || !Array.isArray(body.data)) {
+      return NextResponse.json({ tickers: [], error: "Failed to load market data." }, { status: 502 });
     }
-
-    const payload = (await response.json()) as Binance24hTicker[];
-    const tickers: TickerItem[] = [];
-
-    for (const item of payload) {
-      if (!item.symbol || !isTargetSymbol(item.symbol)) continue;
-      const lastPrice = toFiniteNumber(item.lastPrice);
-      const priceChangePercent = toFiniteNumber(item.priceChangePercent);
-      const quoteVolume = toFiniteNumber(item.quoteVolume);
-      if (lastPrice === null || priceChangePercent === null || quoteVolume === null) continue;
-      tickers.push({
-        symbol: item.symbol,
-        lastPrice,
-        priceChangePercent,
-        quoteVolume
-      });
-    }
-
-    return NextResponse.json({ tickers });
+    return NextResponse.json({ tickers: body.data });
   } catch {
-    return NextResponse.json({ tickers: [], error: "Failed to load Binance tickers." }, { status: 502 });
+    return NextResponse.json({ tickers: [], error: "Failed to load market data." }, { status: 502 });
   }
 }
-

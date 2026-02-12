@@ -22,10 +22,13 @@ export default function HomePage() {
   useEffect(() => {
     const load = async () => {
       try {
-        const response = await fetch("/api/binance/tickers", { cache: "no-store" });
-        const data = (await response.json().catch(() => ({}))) as { tickers?: TickerItem[] };
-        if (!response.ok || !Array.isArray(data.tickers)) return;
-        const top = [...data.tickers]
+        const response = await fetch("/api/markets", { cache: "no-store" });
+        const data = (await response.json().catch(() => ({}))) as {
+          ok?: boolean;
+          data?: TickerItem[];
+        };
+        if (!response.ok || data.ok !== true || !Array.isArray(data.data)) return;
+        const top = [...data.data]
           .sort((a, b) => b.quoteVolume - a.quoteVolume)
           .slice(0, 8);
         if (top.length > 0) setTickers(top);

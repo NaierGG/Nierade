@@ -33,7 +33,7 @@ interface TickerItem {
 }
 
 const CACHE_MS = 30_000;
-const CACHE_KEY = "binance_tickers_cache";
+const CACHE_KEY = "markets_tickers_cache";
 const WATCHLIST_KEY = "watchlist_symbols";
 const LEVERAGED_RE = /(UP|DOWN|BEAR|BULL)USDT$/;
 const STABLE_NOISE = new Set([
@@ -158,21 +158,22 @@ export default function MarketsPage() {
       }
 
       try {
-        const response = await fetch("/api/binance/tickers", { cache: "no-store" });
+        const response = await fetch("/api/markets", { cache: "no-store" });
         const data = (await response.json().catch(() => ({}))) as {
-          tickers?: TickerItem[];
+          ok?: boolean;
+          data?: TickerItem[];
           error?: string;
         };
-        if (!response.ok || !isTickerItemArray(data.tickers)) {
-          throw new Error(data.error ?? "Failed to fetch markets.");
+        if (!response.ok || data.ok !== true || !isTickerItemArray(data.data)) {
+          throw new Error(data.error ?? "Failed to load market data");
         }
 
-        const filtered = data.tickers.filter(filterTicker);
+        const filtered = data.data.filter(filterTicker);
         setTickers(filtered);
         localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), tickers: filtered }));
         setError(null);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to fetch markets.");
+        setError(err instanceof Error ? err.message : "Failed to load market data");
       } finally {
         if (background) {
           setIsRefreshing(false);
