@@ -44,12 +44,12 @@ export function AuthNav() {
   };
 
   if (loading) {
-    return <span className="ml-auto text-xs text-muted-foreground">Checking session...</span>;
+    return <span className="text-xs text-muted-foreground">Checking session...</span>;
   }
 
   if (!user) {
     return (
-      <div className="ml-auto flex items-center gap-2">
+      <div className="flex items-center gap-2">
         <Link
           href="/login"
           className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
@@ -67,7 +67,7 @@ export function AuthNav() {
   }
 
   return (
-    <div className="ml-auto flex items-center gap-2">
+    <div className="flex items-center gap-2">
       <span className="rounded px-2 py-1 text-xs text-muted-foreground">{user.email}</span>
       <button
         type="button"
