@@ -41,23 +41,29 @@ export async function ensureGuestAndAccount(
   tx: Prisma.TransactionClient,
   guestId: string
 ) {
+  const normalizedGuestId = guestId.trim();
+  if (!normalizedGuestId) {
+    throw new TradingError("guestId is required.");
+  }
+
   await tx.guest.upsert({
-    where: { id: guestId },
+    where: { id: normalizedGuestId },
     update: {},
-    create: { id: guestId }
+    create: { id: normalizedGuestId }
   });
 
-  await tx.account.upsert({
-    where: { guestId },
-    update: {},
-    create: { guestId }
-  });
-
-  await tx.futuresAccount.upsert({
-    where: { guestId },
-    update: {},
-    create: { guestId }
-  });
+  await Promise.all([
+    tx.account.upsert({
+      where: { guestId: normalizedGuestId },
+      update: {},
+      create: { guestId: normalizedGuestId }
+    }),
+    tx.futuresAccount.upsert({
+      where: { guestId: normalizedGuestId },
+      update: {},
+      create: { guestId: normalizedGuestId }
+    })
+  ]);
 }
 
 interface ApplyFillInput {

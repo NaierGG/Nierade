@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
+import { compareDecimalStrings, isValidTransferAmountString } from "@/lib/money";
 import {
   Table,
   TableBody,
@@ -34,6 +35,7 @@ const FUTURES_TAKER_FEE = 0.0004;
 const FUTURES_MIN_LEVERAGE = 1;
 const FUTURES_MAX_LEVERAGE = 100;
 const FUTURES_LEVERAGE_PRESETS = [1, 5, 10, 20, 50, 100] as const;
+const TRANSFER_MIN_USDT_TEXT = "0.01";
 const SYMBOL_RE = /^[A-Z0-9]{5,20}$/;
 
 type Side = "BUY" | "SELL";
@@ -582,7 +584,17 @@ export function TradeTerminal() {
 
   const futuresMarginValue = toNumberOrNull(futuresMargin);
   const futuresLeverageValue = clampFuturesLeverage(futuresLeverage);
-  const transferAmountValue = toNumberOrNull(transferAmount);
+  const transferAmountText = transferAmount.trim();
+  const transferAmountValid = isValidTransferAmountString(transferAmountText);
+  const transferAmountMeetsMin =
+    transferAmountValid &&
+    (compareDecimalStrings(transferAmountText, TRANSFER_MIN_USDT_TEXT) ?? -1) >= 0;
+  const spotCashText = (account?.cashUSDT ?? 0).toFixed(6);
+  const futuresCashText = (futuresAccount?.cashUSDT ?? 0).toFixed(6);
+  const spotInsufficient =
+    transferAmountMeetsMin && compareDecimalStrings(transferAmountText, spotCashText) === 1;
+  const futuresInsufficient =
+    transferAmountMeetsMin && compareDecimalStrings(transferAmountText, futuresCashText) === 1;
 
   const futuresNotionalEstimate = useMemo(() => {
     if (
@@ -774,7 +786,7 @@ export function TradeTerminal() {
         toast.error("Guest session not initialized.");
         return;
       }
-      if (typeof transferAmountValue !== "number" || transferAmountValue <= 0) {
+      if (!transferAmountMeetsMin) {
         toast.error("Enter a valid transfer amount.");
         return;
       }
@@ -788,12 +800,15 @@ export function TradeTerminal() {
           body: JSON.stringify({
             guestId,
             direction,
-            amount: transferAmountValue
+            amount: transferAmountText
           })
         });
-        const data = (await response.json().catch(() => ({}))) as { error?: string };
-        if (!response.ok) {
-          throw new Error(data.error ?? "Transfer failed.");
+        const data = (await response.json().catch(() => ({}))) as {
+          ok?: boolean;
+          error?: { code?: string; message?: string };
+        };
+        if (!response.ok || data.ok === false) {
+          throw new Error(data.error?.message ?? "Transfer failed.");
         }
         toast.success("Transfer completed.");
         setTransferAmount("");
@@ -809,7 +824,7 @@ export function TradeTerminal() {
         setIsTransferring(false);
       }
     },
-    [guestId, refreshAccountAndOrders, refreshFuturesData, symbol, transferAmountValue]
+    [guestId, refreshAccountAndOrders, refreshFuturesData, symbol, transferAmountMeetsMin, transferAmountText]
   );
 
   const onOpenFutures = useCallback(async () => {
@@ -1221,7 +1236,7 @@ export function TradeTerminal() {
                   type="button"
                   variant="secondary"
                   onClick={() => void onTransfer("SPOT_TO_FUTURES")}
-                  disabled={isTransferring}
+                  disabled={isTransferring || !transferAmountMeetsMin || spotInsufficient}
                 >
                   Transfer to Futures
                 </Button>
@@ -1229,11 +1244,20 @@ export function TradeTerminal() {
                   type="button"
                   variant="secondary"
                   onClick={() => void onTransfer("FUTURES_TO_SPOT")}
-                  disabled={isTransferring}
+                  disabled={isTransferring || !transferAmountMeetsMin || futuresInsufficient}
                 >
                   Transfer to Spot
                 </Button>
               </div>
+              {!transferAmountMeetsMin && transferAmountText.length > 0 ? (
+                <p className="text-xs text-red-300">Minimum transfer amount is 0.01 USDT.</p>
+              ) : null}
+              {spotInsufficient ? (
+                <p className="text-xs text-red-300">Insufficient funds in Spot wallet.</p>
+              ) : null}
+              {futuresInsufficient ? (
+                <p className="text-xs text-red-300">Insufficient funds in Futures wallet.</p>
+              ) : null}
             </CardContent>
           </Card>
 
