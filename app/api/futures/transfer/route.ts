@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { getSessionFromRequest } from "@/lib/auth";
 import { decimalPlaces, isDecimalString } from "@/lib/money";
 import { parseTransferDirection, TRANSFER_DIRECTION } from "@/lib/futures";
 import { TradingError, ensureGuestAndAccount } from "@/lib/trading";
@@ -54,16 +55,45 @@ function parseTransferAmount(amount: unknown) {
 
 export async function POST(request: NextRequest) {
   try {
+    const session = await getSessionFromRequest(request);
     const body = (await request.json().catch(() => ({}))) as {
+      userId?: unknown;
       guestId?: unknown;
       direction?: unknown;
       amount?: unknown;
     };
 
-    const guestId = typeof body.guestId === "string" ? body.guestId.trim() : "";
-    if (!guestId) {
-      throw new TradingError("guestId is required.");
+    const sessionUserId = session?.user.id ?? "";
+    const bodyUserId = typeof body.userId === "string" ? body.userId.trim() : "";
+    const requestedGuestId = typeof body.guestId === "string" ? body.guestId.trim() : "";
+    const effectiveUserId = sessionUserId;
+
+    let guestId = "";
+    if (effectiveUserId) {
+      const linkedGuest = await prisma.guest.findFirst({
+        where: { userId: effectiveUserId },
+        orderBy: { createdAt: "desc" },
+        select: { id: true }
+      });
+      if (!linkedGuest) {
+        throw new TradingError("No guest account linked to authenticated user.", 404);
+      }
+      guestId = linkedGuest.id;
+    } else {
+      guestId = requestedGuestId;
+      if (!guestId) {
+        throw new TradingError("guestId is required when no authenticated session exists.");
+      }
     }
+
+    console.info("[wallet-transfer:account-resolution]", {
+      hasSession: Boolean(sessionUserId),
+      sessionUserId: sessionUserId || null,
+      bodyUserId: bodyUserId || null,
+      requestedGuestId: requestedGuestId || null,
+      resolvedGuestId: guestId,
+      accountMode: effectiveUserId ? "AUTH_USER" : "GUEST"
+    });
 
     const direction = parseTransferDirection(body.direction);
     const amount = parseTransferAmount(body.amount);
@@ -111,6 +141,7 @@ export async function POST(request: NextRequest) {
       ]);
 
       console.info("[wallet-transfer]", {
+        userId: effectiveUserId || null,
         guestId,
         direction,
         amount: amount.toString(),

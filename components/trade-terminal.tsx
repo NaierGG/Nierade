@@ -215,6 +215,7 @@ export function TradeTerminal() {
   const searchParams = useSearchParams();
   const [symbol, setSymbol] = useState(DEFAULT_SYMBOL);
   const [guestId, setGuestId] = useState<string | null>(null);
+  const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [guestError, setGuestError] = useState<string | null>(null);
   const [tradeMode, setTradeMode] = useState<TradeMode>("SPOT");
   const [account, setAccount] = useState<AccountData | null>(null);
@@ -264,6 +265,31 @@ export function TradeTerminal() {
   }, [searchParams]);
 
   useEffect(() => {
+    const fetchSessionUser = async () => {
+      try {
+        const response = await fetch("/api/auth/me", { cache: "no-store" });
+        if (!response.ok) {
+          setSessionUserId(null);
+          return;
+        }
+        const data = (await response.json().catch(() => ({}))) as {
+          user?: { id?: string | null } | null;
+        };
+        const nextUserId = data.user?.id?.trim() || null;
+        setSessionUserId(nextUserId);
+        console.info("[wallet-client:session-resolution]", {
+          sessionUserId: nextUserId,
+          accountMode: nextUserId ? "AUTH_USER" : "GUEST"
+        });
+      } catch {
+        setSessionUserId(null);
+      }
+    };
+
+    void fetchSessionUser();
+  }, []);
+
+  useEffect(() => {
     const existing = localStorage.getItem("guestId");
     const setupGuest = async () => {
       try {
@@ -292,7 +318,15 @@ export function TradeTerminal() {
   }, []);
 
   const fetchAccountData = useCallback(async (currentGuestId: string) => {
-    const response = await fetch(`/api/account?guestId=${encodeURIComponent(currentGuestId)}`, {
+    const accountQuery = sessionUserId
+      ? `userId=${encodeURIComponent(sessionUserId)}`
+      : `guestId=${encodeURIComponent(currentGuestId)}`;
+    console.info("[wallet-client:balance-fetch]", {
+      sessionUserId,
+      guestId: currentGuestId,
+      accountMode: sessionUserId ? "AUTH_USER" : "GUEST"
+    });
+    const response = await fetch(`/api/account?${accountQuery}`, {
       cache: "no-store"
     });
     const data = (await response.json().catch(() => ({}))) as {
@@ -305,15 +339,23 @@ export function TradeTerminal() {
     }
     setAccount(data.account ?? null);
     setHoldings(data.holdings ?? []);
-  }, []);
+  }, [sessionUserId]);
 
   useEffect(() => {
     setFuturesLeverage((prev) => clampFuturesLeverage(prev));
   }, [tradeMode, symbol]);
 
   const fetchFuturesAccountData = useCallback(async (currentGuestId: string) => {
+    const accountQuery = sessionUserId
+      ? `userId=${encodeURIComponent(sessionUserId)}`
+      : `guestId=${encodeURIComponent(currentGuestId)}`;
+    console.info("[wallet-client:futures-balance-fetch]", {
+      sessionUserId,
+      guestId: currentGuestId,
+      accountMode: sessionUserId ? "AUTH_USER" : "GUEST"
+    });
     const response = await fetch(
-      `/api/futures/account?guestId=${encodeURIComponent(currentGuestId)}`,
+      `/api/futures/account?${accountQuery}`,
       { cache: "no-store" }
     );
     const data = (await response.json().catch(() => ({}))) as {
@@ -324,7 +366,7 @@ export function TradeTerminal() {
       throw new Error(data.error ?? "Failed to fetch futures account.");
     }
     setFuturesAccount(data.account ?? null);
-  }, []);
+  }, [sessionUserId]);
 
   const fetchFuturesPositionData = useCallback(
     async (currentGuestId: string, currentSymbol: string) => {
@@ -782,8 +824,8 @@ export function TradeTerminal() {
 
   const onTransfer = useCallback(
     async (direction: "SPOT_TO_FUTURES" | "FUTURES_TO_SPOT") => {
-      if (!guestId) {
-        toast.error("Guest session not initialized.");
+      if (!sessionUserId && !guestId) {
+        toast.error("Account session not initialized.");
         return;
       }
       if (!transferAmountMeetsMin) {
@@ -794,14 +836,33 @@ export function TradeTerminal() {
       setIsTransferring(true);
       setApiError(null);
       try {
+        const payload: {
+          userId?: string;
+          guestId?: string;
+          direction: "SPOT_TO_FUTURES" | "FUTURES_TO_SPOT";
+          amount: string;
+        } = {
+          direction,
+          amount: transferAmountText
+        };
+        if (sessionUserId) {
+          payload.userId = sessionUserId;
+        } else if (guestId) {
+          payload.guestId = guestId;
+        }
+
+        console.info("[wallet-client:transfer-request]", {
+          sessionUserId,
+          guestId: guestId ?? null,
+          payloadMode: sessionUserId ? "AUTH_USER" : "GUEST",
+          direction,
+          amount: transferAmountText
+        });
+
         const response = await fetch("/api/futures/transfer", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            guestId,
-            direction,
-            amount: transferAmountText
-          })
+          body: JSON.stringify(payload)
         });
         const data = (await response.json().catch(() => ({}))) as {
           ok?: boolean;
@@ -812,10 +873,14 @@ export function TradeTerminal() {
         }
         toast.success("Transfer completed.");
         setTransferAmount("");
-        await Promise.all([
-          refreshAccountAndOrders(guestId),
-          refreshFuturesData(guestId, symbol)
-        ]);
+        if (guestId) {
+          await Promise.all([
+            refreshAccountAndOrders(guestId),
+            refreshFuturesData(guestId, symbol)
+          ]);
+        } else {
+          await Promise.all([fetchAccountData(""), fetchFuturesAccountData("")]);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Transfer failed.";
         setApiError(message);
@@ -824,7 +889,17 @@ export function TradeTerminal() {
         setIsTransferring(false);
       }
     },
-    [guestId, refreshAccountAndOrders, refreshFuturesData, symbol, transferAmountMeetsMin, transferAmountText]
+    [
+      fetchAccountData,
+      fetchFuturesAccountData,
+      guestId,
+      refreshAccountAndOrders,
+      refreshFuturesData,
+      sessionUserId,
+      symbol,
+      transferAmountMeetsMin,
+      transferAmountText
+    ]
   );
 
   const onOpenFutures = useCallback(async () => {
