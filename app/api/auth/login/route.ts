@@ -2,7 +2,7 @@ import bcrypt from "bcryptjs";
 import { NextRequest, NextResponse } from "next/server";
 import { createSession, setSessionCookie } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { checkRateLimit, getKey } from "@/lib/rate-limit";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PASSWORD_MIN_LENGTH = 8;
@@ -19,10 +19,16 @@ function getClientIp(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const ip = getClientIp(request);
-  const limit = checkRateLimit(`auth:login:${ip}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+  const limit = await checkRateLimit(getKey("auth:login", ip), RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
   if (!limit.ok) {
     return NextResponse.json(
-      { error: "Too many login attempts. Please try again later." },
+      {
+        ok: false,
+        error: {
+          code: "RATE_LIMITED",
+          message: "Too many login attempts. Please try again later."
+        }
+      },
       { status: 429 }
     );
   }
@@ -32,10 +38,16 @@ export async function POST(request: NextRequest) {
   const password = typeof body.password === "string" ? body.password : "";
 
   if (!EMAIL_RE.test(email)) {
-    return NextResponse.json({ error: "Please provide a valid email." }, { status: 400 });
+    return NextResponse.json(
+      { ok: false, error: { code: "INVALID_EMAIL", message: "Please provide a valid email." } },
+      { status: 400 }
+    );
   }
   if (password.length < PASSWORD_MIN_LENGTH) {
-    return NextResponse.json({ error: "Invalid email or password." }, { status: 400 });
+    return NextResponse.json(
+      { ok: false, error: { code: "INVALID_CREDENTIALS", message: "Invalid email or password." } },
+      { status: 400 }
+    );
   }
 
   const user = await prisma.user.findUnique({
@@ -47,17 +59,29 @@ export async function POST(request: NextRequest) {
     }
   });
   if (!user) {
-    return NextResponse.json({ error: "Invalid email or password." }, { status: 401 });
+    return NextResponse.json(
+      { ok: false, error: { code: "INVALID_CREDENTIALS", message: "Invalid email or password." } },
+      { status: 401 }
+    );
   }
 
   const isValidPassword = await bcrypt.compare(password, user.passwordHash);
   if (!isValidPassword) {
-    return NextResponse.json({ error: "Invalid email or password." }, { status: 401 });
+    return NextResponse.json(
+      { ok: false, error: { code: "INVALID_CREDENTIALS", message: "Invalid email or password." } },
+      { status: 401 }
+    );
   }
 
   const { token, expiresAt } = await createSession(user.id);
   const response = NextResponse.json({
     ok: true,
+    data: {
+      user: {
+        id: user.id,
+        email: user.email
+      }
+    },
     user: {
       id: user.id,
       email: user.email

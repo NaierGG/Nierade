@@ -4,104 +4,76 @@ import {
   applyFill,
   assertSufficientBalanceOrHolding,
   ensureGuestAndAccount,
-  normalizeSymbol,
-  ORDER_SIDE,
   ORDER_STATUS,
   ORDER_TYPE,
-  OrderSide,
-  OrderType,
-  TradingError,
-  validateNewOrderInput
+  TradingError
 } from "@/lib/trading";
-
-function parseOrderSide(value: unknown): OrderSide {
-  if (value === ORDER_SIDE.BUY || value === ORDER_SIDE.SELL) {
-    return value;
-  }
-  throw new TradingError("side must be BUY or SELL.");
-}
-
-function parseOrderType(value: unknown): OrderType {
-  if (value === ORDER_TYPE.MARKET || value === ORDER_TYPE.LIMIT) {
-    return value;
-  }
-  throw new TradingError("type must be MARKET or LIMIT.");
-}
+import { resolveAccountContext } from "@/lib/account-context";
+import { createOrderSchema } from "@/lib/schemas";
+import { errorResponse, ApiError } from "@/lib/api-response";
+import { assertAllowedSymbol, resolveExecutionPrice } from "@/lib/pricing";
 
 export async function GET(request: NextRequest) {
-  const guestId = request.nextUrl.searchParams.get("guestId")?.trim();
-  if (!guestId) {
-    return NextResponse.json({ error: "guestId is required." }, { status: 400 });
+  try {
+    const ctx = await resolveAccountContext(request, { allowGuest: true });
+
+    const [openOrders, recentOrders] = await Promise.all([
+      prisma.order.findMany({
+        where: {
+          guestId: ctx.guestId,
+          status: ORDER_STATUS.OPEN
+        },
+        orderBy: { createdAt: "desc" }
+      }),
+      prisma.order.findMany({
+        where: {
+          guestId: ctx.guestId,
+          status: { not: ORDER_STATUS.OPEN }
+        },
+        orderBy: { createdAt: "desc" },
+        take: 25
+      })
+    ]);
+
+    return NextResponse.json({
+      ok: true,
+      data: { openOrders, recentOrders },
+      openOrders,
+      recentOrders
+    });
+  } catch (error) {
+    return errorResponse(error, "Failed to fetch orders.");
   }
-
-  const [openOrders, recentOrders] = await Promise.all([
-    prisma.order.findMany({
-      where: {
-        guestId,
-        status: ORDER_STATUS.OPEN
-      },
-      orderBy: { createdAt: "desc" }
-    }),
-    prisma.order.findMany({
-      where: {
-        guestId,
-        status: { not: ORDER_STATUS.OPEN }
-      },
-      orderBy: { createdAt: "desc" },
-      take: 25
-    })
-  ]);
-
-  return NextResponse.json({
-    openOrders,
-    recentOrders
-  });
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const body = (await request.json()) as {
-      guestId?: unknown;
-      symbol?: unknown;
-      side?: unknown;
-      type?: unknown;
-      qty?: unknown;
-      limitPrice?: unknown;
-      currentPrice?: unknown;
-    };
-
-    const guestId =
-      typeof body.guestId === "string" ? body.guestId.trim() : "";
-    const symbol = normalizeSymbol(typeof body.symbol === "string" ? body.symbol : "");
-    const side = parseOrderSide(body.side);
-    const type = parseOrderType(body.type);
-    const qty = Number(body.qty);
-    const limitPrice =
-      body.limitPrice === null || body.limitPrice === undefined
-        ? undefined
-        : Number(body.limitPrice);
-    const currentPrice =
-      body.currentPrice === null || body.currentPrice === undefined
-        ? undefined
-        : Number(body.currentPrice);
-
-    validateNewOrderInput({
-      guestId,
-      symbol,
-      side,
-      type,
-      qty,
-      limitPrice,
-      currentPrice
+    const body = createOrderSchema.parse(await request.json());
+    const ctx = await resolveAccountContext(request, {
+      allowGuest: true,
+      guestId: body.guestId
     });
+    const guestId = ctx.guestId;
+
+    const symbol = await assertAllowedSymbol(body.symbol);
+    const side = body.side;
+    const type = body.type;
+    const qty = body.qty;
+
+    if (type === ORDER_TYPE.MARKET && typeof body.currentPrice !== "number") {
+      throw new ApiError("VALIDATION_ERROR", "currentPrice is required for MARKET order.", 400);
+    }
+    if (type === ORDER_TYPE.LIMIT && typeof body.limitPrice !== "number") {
+      throw new ApiError("VALIDATION_ERROR", "limitPrice is required for LIMIT order.", 400);
+    }
 
     const payload = await prisma.$transaction(async (tx) => {
       await ensureGuestAndAccount(tx, guestId);
 
       if (type === ORDER_TYPE.MARKET) {
-        const fillPrice = Number(currentPrice);
+        const { executionPrice, serverPrice } = await resolveExecutionPrice(symbol, body.currentPrice);
         const now = new Date();
-        await assertSufficientBalanceOrHolding(tx, guestId, symbol, side, qty, fillPrice);
+        await assertSufficientBalanceOrHolding(tx, guestId, symbol, side, qty, executionPrice);
 
         const order = await tx.order.create({
           data: {
@@ -120,22 +92,21 @@ export async function POST(request: NextRequest) {
           symbol,
           side,
           qty,
-          price: fillPrice,
+          price: executionPrice,
           orderId: order.id
         });
 
-        return { mode: "FILLED", orderId: order.id, trade };
+        return {
+          mode: "FILLED" as const,
+          orderId: order.id,
+          trade,
+          serverPrice,
+          executionPrice
+        };
       }
 
-      const pendingLimitPrice = Number(limitPrice);
-      await assertSufficientBalanceOrHolding(
-        tx,
-        guestId,
-        symbol,
-        side,
-        qty,
-        pendingLimitPrice
-      );
+      const pendingLimitPrice = Number(body.limitPrice);
+      await assertSufficientBalanceOrHolding(tx, guestId, symbol, side, qty, pendingLimitPrice);
 
       const order = await tx.order.create({
         data: {
@@ -149,7 +120,7 @@ export async function POST(request: NextRequest) {
         }
       });
 
-      return { mode: "OPEN", orderId: order.id };
+      return { mode: "OPEN" as const, orderId: order.id, serverPrice: null, executionPrice: null, trade: null };
     });
 
     const account = await prisma.account.findUnique({
@@ -164,6 +135,18 @@ export async function POST(request: NextRequest) {
     });
 
     return NextResponse.json({
+      ok: true,
+      data: {
+        result: payload.mode,
+        order,
+        trade: payload.mode === "FILLED" ? payload.trade : null,
+        account,
+        holdings,
+        price: {
+          executionPrice: payload.executionPrice,
+          serverPrice: payload.serverPrice
+        }
+      },
       result: payload.mode,
       order,
       trade: payload.mode === "FILLED" ? payload.trade : null,
@@ -171,9 +154,18 @@ export async function POST(request: NextRequest) {
       holdings
     });
   } catch (error) {
-    const message =
-      error instanceof TradingError ? error.message : "Failed to create order.";
-    const statusCode = error instanceof TradingError ? error.statusCode : 500;
-    return NextResponse.json({ error: message }, { status: statusCode });
+    if (error instanceof TradingError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: {
+            code: "ORDER_CREATE_FAILED",
+            message: error.message
+          }
+        },
+        { status: error.statusCode }
+      );
+    }
+    return errorResponse(error, "Failed to create order.", "ORDER_CREATE_FAILED");
   }
 }

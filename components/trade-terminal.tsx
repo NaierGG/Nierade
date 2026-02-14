@@ -138,6 +138,19 @@ function isUsdtSymbolCandidate(value: string) {
   return SYMBOL_RE.test(value) && value.endsWith("USDT");
 }
 
+function getApiErrorMessage(value: unknown) {
+  if (typeof value === "string") return value;
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "message" in value &&
+    typeof (value as { message?: unknown }).message === "string"
+  ) {
+    return (value as { message: string }).message;
+  }
+  return null;
+}
+
 function clampFuturesLeverage(value: number) {
   if (!Number.isFinite(value)) return FUTURES_MIN_LEVERAGE;
   return Math.min(FUTURES_MAX_LEVERAGE, Math.max(FUTURES_MIN_LEVERAGE, Math.floor(value)));
@@ -335,7 +348,7 @@ export function TradeTerminal() {
       error?: string;
     };
     if (!response.ok) {
-      throw new Error(data.error ?? "Failed to fetch account.");
+      throw new Error(getApiErrorMessage(data.error) ?? "Failed to fetch account.");
     }
     setAccount(data.account ?? null);
     setHoldings(data.holdings ?? []);
@@ -363,7 +376,7 @@ export function TradeTerminal() {
       error?: string;
     };
     if (!response.ok) {
-      throw new Error(data.error ?? "Failed to fetch futures account.");
+      throw new Error(getApiErrorMessage(data.error) ?? "Failed to fetch futures account.");
     }
     setFuturesAccount(data.account ?? null);
   }, [sessionUserId]);
@@ -381,7 +394,7 @@ export function TradeTerminal() {
         error?: string;
       };
       if (!response.ok) {
-        throw new Error(data.error ?? "Failed to fetch futures position.");
+        throw new Error(getApiErrorMessage(data.error) ?? "Failed to fetch futures position.");
       }
       setFuturesPosition(data.position ?? null);
     },
@@ -397,7 +410,7 @@ export function TradeTerminal() {
       error?: string;
     };
     if (!response.ok) {
-      throw new Error(data.error ?? "Failed to fetch orders.");
+      throw new Error(getApiErrorMessage(data.error) ?? "Failed to fetch orders.");
     }
     setOpenOrders(data.openOrders ?? []);
     return data;
@@ -412,7 +425,7 @@ export function TradeTerminal() {
       error?: string;
     };
     if (!response.ok) {
-      throw new Error(data.error ?? "Failed to fetch trades.");
+      throw new Error(getApiErrorMessage(data.error) ?? "Failed to fetch trades.");
     }
     setTrades(data.trades ?? []);
   }, []);
@@ -803,7 +816,7 @@ export function TradeTerminal() {
       });
       const data = (await response.json().catch(() => ({}))) as { error?: string; result?: string };
       if (!response.ok) {
-        throw new Error(data.error ?? "Failed to place order.");
+        throw new Error(getApiErrorMessage(data.error) ?? "Failed to place order.");
       }
 
       setQtyInput("");
@@ -869,7 +882,7 @@ export function TradeTerminal() {
           error?: { code?: string; message?: string };
         };
         if (!response.ok || data.ok === false) {
-          throw new Error(data.error?.message ?? "Transfer failed.");
+          throw new Error(getApiErrorMessage(data.error) ?? "Transfer failed.");
         }
         toast.success("Transfer completed.");
         setTransferAmount("");
@@ -949,7 +962,7 @@ export function TradeTerminal() {
       });
       const data = (await response.json().catch(() => ({}))) as { error?: string };
       if (!response.ok) {
-        throw new Error(data.error ?? "Failed to open futures position.");
+        throw new Error(getApiErrorMessage(data.error) ?? "Failed to open futures position.");
       }
 
       toast.success("Futures position opened.");
@@ -1002,7 +1015,7 @@ export function TradeTerminal() {
       });
       const data = (await response.json().catch(() => ({}))) as { error?: string };
       if (!response.ok) {
-        throw new Error(data.error ?? "Failed to close futures position.");
+        throw new Error(getApiErrorMessage(data.error) ?? "Failed to close futures position.");
       }
 
       toast.success("Futures position closed.");
@@ -1086,7 +1099,7 @@ export function TradeTerminal() {
 
         const data = (await response.json().catch(() => ({}))) as { error?: string; result?: string };
         if (!response.ok) {
-          throw new Error(data.error ?? "Failed to place market sell.");
+          throw new Error(getApiErrorMessage(data.error) ?? "Failed to place market sell.");
         }
 
         toast.success(
@@ -1126,7 +1139,7 @@ export function TradeTerminal() {
       });
       const data = (await response.json().catch(() => ({}))) as { error?: string };
       if (!response.ok) {
-        const message = data.error ?? "Failed to cancel order.";
+        const message = getApiErrorMessage(data.error) ?? "Failed to cancel order.";
         setApiError(message);
         if (showToast) toast.error(message);
         return false;

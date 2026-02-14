@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { addRealizedPnlAtomic, creditCashAtomic, decrementHoldingAtomic, incrementHoldingAtomic, spendCashAtomic } from "@/lib/ledger";
 
 export const ORDER_SIDE = {
   BUY: "BUY",
@@ -81,84 +82,18 @@ export async function applyFill(
 ) {
   const { guestId, symbol, side, qty, price, orderId } = input;
 
-  const account = await tx.account.findUnique({
-    where: { guestId }
-  });
-
-  if (!account) {
-    throw new TradingError("Account not found for guestId.", 404);
-  }
-
   if (side === ORDER_SIDE.BUY) {
     const cost = qty * price;
-    if (account.cashUSDT < cost) {
-      throw new TradingError("Insufficient cashUSDT for BUY order.");
-    }
-
-    await tx.account.update({
-      where: { guestId },
-      data: { cashUSDT: { decrement: cost } }
-    });
-
-    const existing = await tx.holding.findUnique({
-      where: { guestId_symbol: { guestId, symbol } }
-    });
-
-    if (!existing) {
-      await tx.holding.create({
-        data: {
-          guestId,
-          symbol,
-          qty,
-          avgPrice: price
-        }
-      });
-    } else {
-      const newQty = existing.qty + qty;
-      const newAvgPrice =
-        (existing.qty * existing.avgPrice + qty * price) / newQty;
-
-      await tx.holding.update({
-        where: { id: existing.id },
-        data: {
-          qty: newQty,
-          avgPrice: newAvgPrice
-        }
-      });
-    }
+    await spendCashAtomic(tx, guestId, cost);
+    await incrementHoldingAtomic(tx, guestId, symbol, qty, price);
   } else {
-    const holding = await tx.holding.findUnique({
-      where: { guestId_symbol: { guestId, symbol } }
-    });
-
-    if (!holding || holding.qty < qty) {
-      throw new TradingError("Insufficient holding qty for SELL order.");
-    }
-
-    const costBasis = qty * holding.avgPrice;
+    const holdingResult = await decrementHoldingAtomic(tx, guestId, symbol, qty);
+    const costBasis = qty * holdingResult.avgPrice;
     const proceeds = qty * price;
     const realizedDelta = proceeds - costBasis;
 
-    await tx.account.update({
-      where: { guestId },
-      data: {
-        cashUSDT: { increment: proceeds },
-        realizedPnl: { increment: realizedDelta }
-      }
-    });
-
-    const remainingQty = holding.qty - qty;
-    if (remainingQty <= 1e-12) {
-      await tx.holding.update({
-        where: { id: holding.id },
-        data: { qty: 0, avgPrice: 0 }
-      });
-    } else {
-      await tx.holding.update({
-        where: { id: holding.id },
-        data: { qty: remainingQty }
-      });
-    }
+    await creditCashAtomic(tx, guestId, proceeds);
+    await addRealizedPnlAtomic(tx, guestId, realizedDelta);
   }
 
   if (orderId) {
@@ -190,15 +125,15 @@ export async function assertSufficientBalanceOrHolding(
   qty: number,
   price: number
 ) {
-  const account = await tx.account.findUnique({
-    where: { guestId }
-  });
-  if (!account) {
-    throw new TradingError("Account not found for guestId.", 404);
-  }
-
   if (side === ORDER_SIDE.BUY) {
     const cost = qty * price;
+    const account = await tx.account.findUnique({
+      where: { guestId },
+      select: { cashUSDT: true }
+    });
+    if (!account) {
+      throw new TradingError("Account not found for guestId.", 404);
+    }
     if (account.cashUSDT < cost) {
       throw new TradingError("Insufficient cashUSDT for BUY order.");
     }

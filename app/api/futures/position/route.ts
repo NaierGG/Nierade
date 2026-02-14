@@ -1,27 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { normalizeFuturesSymbol } from "@/lib/futures";
-import { TradingError } from "@/lib/trading";
+import { resolveAccountContext } from "@/lib/account-context";
+import { errorResponse } from "@/lib/api-response";
+import { symbolSchema } from "@/lib/schemas";
+import { assertAllowedSymbol } from "@/lib/pricing";
 
 export async function GET(request: NextRequest) {
   try {
-    const guestId = request.nextUrl.searchParams.get("guestId")?.trim();
-    const rawSymbol = request.nextUrl.searchParams.get("symbol");
-    if (!guestId) {
-      throw new TradingError("guestId is required.");
-    }
-    const symbol = normalizeFuturesSymbol(rawSymbol);
+    const ctx = await resolveAccountContext(request, { allowGuest: true });
+    const symbol = await assertAllowedSymbol(
+      symbolSchema.parse(request.nextUrl.searchParams.get("symbol") ?? "")
+    );
 
     const position = await prisma.futuresPosition.findUnique({
       where: {
-        guestId_symbol: { guestId, symbol }
+        guestId_symbol: { guestId: ctx.guestId, symbol }
       }
     });
 
-    return NextResponse.json({ position });
+    return NextResponse.json({ ok: true, data: { position }, position });
   } catch (error) {
-    const message = error instanceof TradingError ? error.message : "Failed to fetch position.";
-    const statusCode = error instanceof TradingError ? error.statusCode : 500;
-    return NextResponse.json({ error: message }, { status: statusCode });
+    return errorResponse(error, "Failed to fetch position.", "FUTURES_POSITION_FAILED");
   }
 }

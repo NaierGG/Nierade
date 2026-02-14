@@ -2,36 +2,26 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import {
   applyFill,
-  assertPositiveNumber,
-  assertSufficientBalanceOrHolding,
   canLimitOrderFill,
   TradingError,
   ORDER_SIDE,
   ORDER_STATUS,
   ORDER_TYPE
 } from "@/lib/trading";
+import { resolveAccountContext } from "@/lib/account-context";
+import { fillOrderSchema } from "@/lib/schemas";
+import { errorResponse } from "@/lib/api-response";
+import { resolveExecutionPrice } from "@/lib/pricing";
 
 export async function POST(request: NextRequest) {
   try {
-    const body = (await request.json()) as {
-      guestId?: unknown;
-      orderId?: unknown;
-      currentPrice?: unknown;
-    };
-
-    const guestId =
-      typeof body.guestId === "string" ? body.guestId.trim() : "";
-    const orderId =
-      typeof body.orderId === "string" ? body.orderId.trim() : "";
-    const currentPrice = Number(body.currentPrice);
-
-    if (!guestId) {
-      throw new TradingError("guestId is required.");
-    }
-    if (!orderId) {
-      throw new TradingError("orderId is required.");
-    }
-    assertPositiveNumber(currentPrice, "currentPrice");
+    const body = fillOrderSchema.parse(await request.json());
+    const ctx = await resolveAccountContext(request, {
+      allowGuest: true,
+      guestId: body.guestId
+    });
+    const guestId = ctx.guestId;
+    const orderId = body.orderId;
 
     const now = new Date();
 
@@ -45,7 +35,7 @@ export async function POST(request: NextRequest) {
       }
 
       if (order.status !== ORDER_STATUS.OPEN || order.filledAt !== null) {
-        return { filled: false as const, trade: null };
+        return { filled: false as const, trade: null, price: null };
       }
 
       if (order.type !== ORDER_TYPE.LIMIT) {
@@ -60,8 +50,9 @@ export async function POST(request: NextRequest) {
         throw new TradingError("Order side is invalid.");
       }
 
-      if (!canLimitOrderFill(order.side, order.limitPrice, currentPrice)) {
-        return { filled: false as const, trade: null };
+      const { executionPrice, serverPrice } = await resolveExecutionPrice(order.symbol, body.currentPrice);
+      if (!canLimitOrderFill(order.side, order.limitPrice, executionPrice)) {
+        return { filled: false as const, trade: null, price: { executionPrice, serverPrice } };
       }
 
       const lock = await tx.order.updateMany({
@@ -78,29 +69,20 @@ export async function POST(request: NextRequest) {
       });
 
       if (lock.count !== 1) {
-        return { filled: false as const, trade: null };
+        return { filled: false as const, trade: null, price: { executionPrice, serverPrice } };
       }
 
       try {
-        await assertSufficientBalanceOrHolding(
-          tx,
-          guestId,
-          order.symbol,
-          order.side,
-          order.qty,
-          currentPrice
-        );
-
         const trade = await applyFill(tx, {
           guestId,
           symbol: order.symbol,
           side: order.side,
           qty: order.qty,
-          price: currentPrice,
+          price: executionPrice,
           orderId: order.id
         });
 
-        return { filled: true as const, trade };
+        return { filled: true as const, trade, price: { executionPrice, serverPrice } };
       } catch (error) {
         await tx.order.updateMany({
           where: {
@@ -118,26 +100,31 @@ export async function POST(request: NextRequest) {
         if (error instanceof TradingError) {
           throw error;
         }
-        throw new TradingError("Failed to fill order.");
+        throw error;
       }
     });
 
     if (!payload.filled) {
-      return NextResponse.json({ ok: true, filled: false });
+      return NextResponse.json({ ok: true, data: { filled: false, price: payload.price }, filled: false });
     }
 
     return NextResponse.json({
       ok: true,
+      data: { filled: true, trade: payload.trade, price: payload.price },
       filled: true,
       trade: payload.trade
     });
   } catch (error) {
-    const message =
-      error instanceof TradingError ? error.message : "Failed to fill order.";
-    const statusCode = error instanceof TradingError ? error.statusCode : 500;
-    return NextResponse.json(
-      { ok: false, filled: false, error: message },
-      { status: statusCode }
-    );
+    if (error instanceof TradingError) {
+      return NextResponse.json(
+        {
+          ok: false,
+          filled: false,
+          error: { code: "ORDER_FILL_FAILED", message: error.message }
+        },
+        { status: error.statusCode }
+      );
+    }
+    return errorResponse(error, "Failed to fill order.", "ORDER_FILL_FAILED");
   }
 }

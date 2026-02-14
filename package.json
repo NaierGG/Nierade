@@ -8,6 +8,7 @@
     "vercel-build": "prisma migrate deploy && next build",
     "postinstall": "prisma generate",
     "start": "next start",
+    "test": "node tests/run-security-checks.js",
     "migrate:deploy": "prisma migrate deploy",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev"

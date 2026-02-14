@@ -1,17 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolveAccountContext } from "@/lib/account-context";
+import { errorResponse } from "@/lib/api-response";
 
 export async function GET(request: NextRequest) {
-  const guestId = request.nextUrl.searchParams.get("guestId")?.trim();
-  if (!guestId) {
-    return NextResponse.json({ error: "guestId is required." }, { status: 400 });
+  try {
+    const ctx = await resolveAccountContext(request, { allowGuest: true });
+    const trades = await prisma.trade.findMany({
+      where: { guestId: ctx.guestId },
+      orderBy: { createdAt: "desc" },
+      take: 50
+    });
+
+    return NextResponse.json({ ok: true, data: { trades }, trades });
+  } catch (error) {
+    return errorResponse(error, "Failed to fetch trades.");
   }
-
-  const trades = await prisma.trade.findMany({
-    where: { guestId },
-    orderBy: { createdAt: "desc" },
-    take: 50
-  });
-
-  return NextResponse.json({ trades });
 }

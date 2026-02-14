@@ -4,6 +4,19 @@ import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
+function getErrorMessage(value: unknown) {
+  if (typeof value === "string") return value;
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "message" in value &&
+    typeof (value as { message?: unknown }).message === "string"
+  ) {
+    return (value as { message: string }).message;
+  }
+  return null;
+}
+
 async function linkGuestAfterAuth() {
   const guestId = localStorage.getItem("guestId");
   if (!guestId) return;
@@ -33,9 +46,9 @@ export default function SignupPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password })
       });
-      const data = (await response.json().catch(() => ({}))) as { error?: string };
+      const data = (await response.json().catch(() => ({}))) as { error?: unknown };
       if (!response.ok) {
-        setError(data.error ?? "Sign up failed.");
+        setError(getErrorMessage(data.error) ?? "Sign up failed.");
         return;
       }
 

@@ -4,38 +4,28 @@ import {
   computeLiquidationPrice,
   FUTURES_ACTION,
   FUTURES_MMR,
-  FUTURES_TAKER_FEE,
-  normalizeFuturesSymbol,
-  parseFuturesSide,
-  parsePositiveNumber,
-  validateLeverage
+  FUTURES_TAKER_FEE
 } from "@/lib/futures";
 import { ensureGuestAndAccount, TradingError } from "@/lib/trading";
+import { resolveAccountContext } from "@/lib/account-context";
+import { futuresOpenSchema } from "@/lib/schemas";
+import { errorResponse } from "@/lib/api-response";
+import { assertAllowedSymbol, resolveExecutionPrice } from "@/lib/pricing";
+import { spendFuturesCashAtomic } from "@/lib/ledger";
 
 export async function POST(request: NextRequest) {
   try {
-    const body = (await request.json().catch(() => ({}))) as {
-      guestId?: unknown;
-      symbol?: unknown;
-      side?: unknown;
-      leverage?: unknown;
-      margin?: unknown;
-      currentPrice?: unknown;
-    };
-
-    const guestId = typeof body.guestId === "string" ? body.guestId.trim() : "";
-    if (!guestId) {
-      throw new TradingError("guestId is required.");
-    }
-    const symbol = normalizeFuturesSymbol(body.symbol);
-    const side = parseFuturesSide(body.side);
-    const parsedLeverage = Number(body.leverage);
-    if (!Number.isFinite(parsedLeverage)) {
-      throw new TradingError("leverage must be a finite number.");
-    }
-    const leverage = validateLeverage(Math.floor(parsedLeverage));
-    const margin = parsePositiveNumber(body.margin, "margin");
-    const currentPrice = parsePositiveNumber(body.currentPrice, "currentPrice");
+    const body = futuresOpenSchema.parse(await request.json().catch(() => ({})));
+    const ctx = await resolveAccountContext(request, {
+      allowGuest: true,
+      guestId: body.guestId
+    });
+    const guestId = ctx.guestId;
+    const symbol = await assertAllowedSymbol(body.symbol);
+    const side = body.side;
+    const leverage = body.leverage;
+    const margin = body.margin;
+    const { executionPrice, serverPrice } = await resolveExecutionPrice(symbol, body.currentPrice);
 
     const payload = await prisma.$transaction(async (tx) => {
       await ensureGuestAndAccount(tx, guestId);
@@ -47,29 +37,16 @@ export async function POST(request: NextRequest) {
         throw new TradingError("Position already exists for this symbol.");
       }
 
-      const futuresAccount = await tx.futuresAccount.findUnique({ where: { guestId } });
-      if (!futuresAccount) {
-        throw new TradingError("Futures account not found.", 404);
-      }
-
       const notional = margin * leverage;
-      const qty = notional / currentPrice;
+      const qty = notional / executionPrice;
       const maintenance = notional * FUTURES_MMR;
-      const liquidationPrice = computeLiquidationPrice(side, currentPrice, margin, leverage);
+      const liquidationPrice = computeLiquidationPrice(side, executionPrice, margin, leverage);
       const openFee = notional * FUTURES_TAKER_FEE;
       const required = margin + openFee;
 
-      if (futuresAccount.cashUSDT < required) {
-        throw new TradingError("Insufficient Futures cashUSDT.");
-      }
+      await spendFuturesCashAtomic(tx, guestId, required);
 
-      const [account, position, trade] = await Promise.all([
-        tx.futuresAccount.update({
-          where: { guestId },
-          data: {
-            cashUSDT: { decrement: required }
-          }
-        }),
+      const [position, trade, account] = await Promise.all([
         tx.futuresPosition.create({
           data: {
             guestId,
@@ -77,7 +54,7 @@ export async function POST(request: NextRequest) {
             side,
             leverage,
             margin,
-            entryPrice: currentPrice,
+            entryPrice: executionPrice,
             qty,
             liquidationPrice
           }
@@ -89,20 +66,31 @@ export async function POST(request: NextRequest) {
             side,
             action: FUTURES_ACTION.OPEN,
             qty,
-            price: currentPrice,
+            price: executionPrice,
             fee: openFee,
             realizedPnl: 0
           }
+        }),
+        tx.futuresAccount.findUnique({
+          where: { guestId }
         })
       ]);
 
-      return { account, position, trade, maintenance };
+      return { account, position, trade, maintenance, executionPrice, serverPrice };
     });
 
-    return NextResponse.json(payload);
+    return NextResponse.json({
+      ok: true,
+      data: payload,
+      ...payload
+    });
   } catch (error) {
-    const message = error instanceof TradingError ? error.message : "Failed to open futures position.";
-    const statusCode = error instanceof TradingError ? error.statusCode : 500;
-    return NextResponse.json({ error: message }, { status: statusCode });
+    if (error instanceof TradingError) {
+      return NextResponse.json(
+        { ok: false, error: { code: "FUTURES_OPEN_FAILED", message: error.message } },
+        { status: error.statusCode }
+      );
+    }
+    return errorResponse(error, "Failed to open futures position.", "FUTURES_OPEN_FAILED");
   }
 }

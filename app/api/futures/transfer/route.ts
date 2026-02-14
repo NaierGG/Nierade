@@ -1,32 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getSessionFromRequest } from "@/lib/auth";
 import { decimalPlaces, isDecimalString } from "@/lib/money";
 import { parseTransferDirection, TRANSFER_DIRECTION } from "@/lib/futures";
 import { TradingError, ensureGuestAndAccount } from "@/lib/trading";
+import { resolveAccountContext } from "@/lib/account-context";
+import { transferSchema } from "@/lib/schemas";
+import { errorResponse } from "@/lib/api-response";
+import { creditCashAtomic, creditFuturesCashAtomic, spendCashAtomic, spendFuturesCashAtomic } from "@/lib/ledger";
 
 const TRANSFER_MIN_USDT = process.env.TRANSFER_MIN_USDT ?? "0.01";
 const TRANSFER_MAX_DECIMALS = 6;
 
-type TransferErrorCode =
-  | "INVALID_AMOUNT"
-  | "INSUFFICIENT_FUNDS"
-  | "ACCOUNT_NOT_FOUND"
-  | "INTERNAL";
-
-function transferError(code: TransferErrorCode, message: string, statusCode = 400) {
-  return NextResponse.json(
-    {
-      ok: false,
-      error: { code, message }
-    },
-    { status: statusCode }
-  );
-}
-
 function parseTransferAmount(amount: unknown) {
-  const amountText = typeof amount === "string" ? amount.trim() : "";
+  const amountText = typeof amount === "string" ? amount.trim() : String(amount ?? "").trim();
   if (!amountText || !isDecimalString(amountText)) {
     throw new TradingError("amount must be a decimal string.");
   }
@@ -55,121 +42,36 @@ function parseTransferAmount(amount: unknown) {
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getSessionFromRequest(request);
-    const body = (await request.json().catch(() => ({}))) as {
-      userId?: unknown;
-      guestId?: unknown;
-      direction?: unknown;
-      amount?: unknown;
-    };
-
-    const sessionUserId = session?.user.id ?? "";
-    const bodyUserId = typeof body.userId === "string" ? body.userId.trim() : "";
-    const requestedGuestId = typeof body.guestId === "string" ? body.guestId.trim() : "";
-    const effectiveUserId = sessionUserId;
-
-    let guestId = "";
-    if (effectiveUserId) {
-      const linkedGuest = await prisma.guest.findFirst({
-        where: { userId: effectiveUserId },
-        orderBy: { createdAt: "desc" },
-        select: { id: true }
-      });
-      if (!linkedGuest) {
-        throw new TradingError("No guest account linked to authenticated user.", 404);
-      }
-      guestId = linkedGuest.id;
-    } else {
-      guestId = requestedGuestId;
-      if (!guestId) {
-        throw new TradingError("guestId is required when no authenticated session exists.");
-      }
-    }
-
-    console.info("[wallet-transfer:account-resolution]", {
-      hasSession: Boolean(sessionUserId),
-      sessionUserId: sessionUserId || null,
-      bodyUserId: bodyUserId || null,
-      requestedGuestId: requestedGuestId || null,
-      resolvedGuestId: guestId,
-      accountMode: effectiveUserId ? "AUTH_USER" : "GUEST"
+    const body = transferSchema.parse(await request.json().catch(() => ({})));
+    const ctx = await resolveAccountContext(request, {
+      allowGuest: true,
+      guestId: body.guestId
     });
-
+    const guestId = ctx.guestId;
     const direction = parseTransferDirection(body.direction);
-    const amount = parseTransferAmount(body.amount);
+    const amount = parseTransferAmount(body.amount).toNumber();
 
     await prisma.$transaction(async (tx) => {
       await ensureGuestAndAccount(tx, guestId);
 
-      const [spot, futures] = await Promise.all([
-        tx.account.findUnique({ where: { guestId } }),
-        tx.futuresAccount.findUnique({ where: { guestId } })
-      ]);
-
-      if (!spot || !futures) {
-        throw new TradingError("Accounts not found.", 404);
+      if (direction === TRANSFER_DIRECTION.SPOT_TO_FUTURES) {
+        await spendCashAtomic(tx, guestId, amount);
+        await creditFuturesCashAtomic(tx, guestId, amount);
+        return;
       }
 
-      const spotCash = new Prisma.Decimal(String(spot.cashUSDT));
-      const futuresCash = new Prisma.Decimal(String(futures.cashUSDT));
-      const now = new Date();
-
-      const isSpotToFutures = direction === TRANSFER_DIRECTION.SPOT_TO_FUTURES;
-      const sourceWalletName = isSpotToFutures ? "Spot" : "Futures";
-      const sourceBalance = isSpotToFutures ? spotCash : futuresCash;
-      if (sourceBalance.lt(amount)) {
-        throw new TradingError(`Insufficient ${sourceWalletName} cashUSDT.`);
-      }
-
-      const nextSpotCash = isSpotToFutures ? spotCash.sub(amount) : spotCash.add(amount);
-      const nextFuturesCash = isSpotToFutures ? futuresCash.add(amount) : futuresCash.sub(amount);
-      await Promise.all([
-        tx.account.update({
-          where: { guestId },
-          data: {
-            cashUSDT: nextSpotCash.toNumber(),
-            updatedAt: now
-          }
-        }),
-        tx.futuresAccount.update({
-          where: { guestId },
-          data: {
-            cashUSDT: nextFuturesCash.toNumber(),
-            updatedAt: now
-          }
-        })
-      ]);
-
-      console.info("[wallet-transfer]", {
-        userId: effectiveUserId || null,
-        guestId,
-        direction,
-        amount: amount.toString(),
-        prevSpotCashUSDT: spotCash.toString(),
-        prevFuturesCashUSDT: futuresCash.toString(),
-        nextSpotCashUSDT: nextSpotCash.toString(),
-        nextFuturesCashUSDT: nextFuturesCash.toString()
-      });
+      await spendFuturesCashAtomic(tx, guestId, amount);
+      await creditCashAtomic(tx, guestId, amount);
     });
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, data: { transferred: true } });
   } catch (error) {
     if (error instanceof TradingError) {
-      if (error.statusCode === 404) {
-        return transferError("ACCOUNT_NOT_FOUND", error.message, 404);
-      }
-
-      if (error.message.includes("Insufficient")) {
-        return transferError("INSUFFICIENT_FUNDS", error.message, 400);
-      }
-
-      if (error.statusCode < 500) {
-        return transferError("INVALID_AMOUNT", error.message, 400);
-      }
-
-      return transferError("INTERNAL", error.message, error.statusCode);
+      return NextResponse.json(
+        { ok: false, error: { code: "TRANSFER_FAILED", message: error.message } },
+        { status: error.statusCode >= 500 ? error.statusCode : 400 }
+      );
     }
-
-    return transferError("INTERNAL", "Failed to transfer funds.", 500);
+    return errorResponse(error, "Failed to transfer funds.", "TRANSFER_FAILED");
   }
 }
