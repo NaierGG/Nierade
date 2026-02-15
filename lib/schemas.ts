@@ -1,4 +1,4 @@
-import { z } from "next/dist/compiled/zod";
+import { z } from "zod";
 
 export const GUEST_ID_RE = /^guest_[0-9a-fA-F-]{36}$/;
 
@@ -34,7 +34,7 @@ export const createOrderSchema = z.object({
 export const fillOrderSchema = z.object({
   guestId: z.string().trim().optional(),
   orderId: z.string().trim().min(1),
-  currentPrice: priceSchema
+  currentPrice: priceSchema.optional()
 });
 
 export const cancelOrderSchema = z.object({
@@ -67,4 +67,10 @@ export const transferSchema = z.object({
   guestId: z.string().trim().optional(),
   direction: z.enum(["SPOT_TO_FUTURES", "FUTURES_TO_SPOT"]),
   amount: z.union([z.string(), z.number()])
+});
+
+export const futuresAddMarginSchema = z.object({
+  guestId: z.string().trim().optional(),
+  symbol: symbolSchema,
+  addAmount: priceSchema.max(10_000_000)
 });

@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { TradingError, assertPositiveNumber, ensureGuestAndAccount, normalizeSymbol } from "@/lib/trading";
+import { TradingError, assertPositiveNumber, normalizeSymbol, requireGuestAndAccounts } from "@/lib/trading";
 
 export const FUTURES_MMR = 0.005;
 export const FUTURES_TAKER_FEE = 0.0004;
@@ -85,7 +85,7 @@ export async function ensureGuestAccounts(
   if (!guestId || typeof guestId !== "string") {
     throw new TradingError("guestId is required.");
   }
-  await ensureGuestAndAccount(tx, guestId.trim());
+  await requireGuestAndAccounts(tx, guestId.trim());
 }
 
 export function normalizeFuturesSymbol(symbol: unknown) {

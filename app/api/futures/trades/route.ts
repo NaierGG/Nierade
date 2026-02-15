@@ -11,19 +11,13 @@ export async function GET(request: NextRequest) {
       await requireGuestAndAccounts(tx, ctx.guestId);
     });
 
-    const account = await prisma.futuresAccount.findUnique({
+    const trades = await prisma.futuresTrade.findMany({
       where: { guestId: ctx.guestId },
-      select: {
-        id: true,
-        guestId: true,
-        cashUSDT: true,
-        createdAt: true,
-        updatedAt: true
-      }
+      orderBy: { createdAt: "desc" },
+      take: 100
     });
-
-    return okResponse({ account });
+    return okResponse({ trades });
   } catch (error) {
-    return errorResponse(error, "Failed to load futures account.");
+    return errorResponse(error, "Failed to fetch futures trades.", "FUTURES_TRADES_FAILED");
   }
 }

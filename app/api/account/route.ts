@@ -1,12 +1,17 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveAccountContext } from "@/lib/account-context";
-import { errorResponse } from "@/lib/api-response";
+import { errorResponse, okResponse, ApiError } from "@/lib/api-response";
+import { requireGuestAndAccounts } from "@/lib/trading";
 
 export async function GET(request: NextRequest) {
   try {
     const ctx = await resolveAccountContext(request, { allowGuest: true });
     const guestId = ctx.guestId;
+
+    await prisma.$transaction(async (tx) => {
+      await requireGuestAndAccounts(tx, guestId);
+    });
 
     const account = await prisma.account.findUnique({
       where: { guestId },
@@ -22,10 +27,7 @@ export async function GET(request: NextRequest) {
     });
 
     if (!account) {
-      return NextResponse.json(
-        { ok: false, error: { code: "ACCOUNT_NOT_FOUND", message: "Account not found." } },
-        { status: 404 }
-      );
+      throw new ApiError("ACCOUNT_NOT_FOUND", "Account not found.", 404);
     }
 
     const holdings = await prisma.holding.findMany({
@@ -36,12 +38,7 @@ export async function GET(request: NextRequest) {
       orderBy: { symbol: "asc" }
     });
 
-    return NextResponse.json({
-      ok: true,
-      data: { account, holdings },
-      account,
-      holdings
-    });
+    return okResponse({ account, holdings });
   } catch (error) {
     return errorResponse(error, "Failed to load account.");
   }

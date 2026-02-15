@@ -1,7 +1,7 @@
 # Crypto Paper Trader (Milestone 4)
 
 Next.js App Router app for crypto paper trading with:
-- Guest mode (`guestId` in `localStorage`)
+- Guest mode (`guest_id` httpOnly cookie)
 - Email/password auth (no magic link)
 - Prisma-backed DB sessions (persistent login)
 - Spot + futures paper trading
@@ -36,7 +36,7 @@ Next.js App Router app for crypto paper trading with:
   - After login/signup, current `guestId` is linked to the authenticated user
   - Also auto-links on app load when logged in and `guestId` exists
 - Login/signup abuse protection:
-  - Simple in-memory per-IP rate limiting (dev-focused)
+  - Upstash Redis fixed-window rate limiting
 
 ## Deployment (Neon + Vercel)
 
@@ -45,6 +45,9 @@ Next.js App Router app for crypto paper trading with:
 3. Set auth/env vars in Vercel as needed:
    - `AUTH_COOKIE_SECURE=true`
    - `DATABASE_URL=postgresql://...`
+   - `CRON_SECRET=...`
+   - `UPSTASH_REDIS_REST_URL=...`
+   - `UPSTASH_REDIS_REST_TOKEN=...`
 4. Build command on Vercel:
 
 ```bash
@@ -109,6 +112,12 @@ http://localhost:3000/trade
 ```bash
 npm run build
 ```
+
+## Cron
+
+- `GET /api/cron/fill-limit-orders`
+- Required header: `x-cron-secret: ${CRON_SECRET}`
+- Vercel cron runs every minute via `vercel.json`.
 
 ## Prisma Migration Workflow
 

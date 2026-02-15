@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveAccountContext } from "@/lib/account-context";
-import { errorResponse } from "@/lib/api-response";
+import { errorResponse, okResponse } from "@/lib/api-response";
 
 export async function GET(request: NextRequest) {
   try {
@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
       take: 50
     });
 
-    return NextResponse.json({ ok: true, data: { trades }, trades });
+    return okResponse({ trades });
   } catch (error) {
     return errorResponse(error, "Failed to fetch trades.");
   }

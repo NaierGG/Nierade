@@ -1,5 +1,12 @@
 import { Prisma } from "@prisma/client";
-import { addRealizedPnlAtomic, creditCashAtomic, decrementHoldingAtomic, incrementHoldingAtomic, spendCashAtomic } from "@/lib/ledger";
+import {
+  addSpotRealizedPnl,
+  creditSpotCash,
+  decrementHolding,
+  incrementHoldingAndRecalcAvg,
+  spendSpotCash
+} from "@/lib/ledger";
+import { ApiError } from "@/lib/api-response";
 
 export const ORDER_SIDE = {
   BUY: "BUY",
@@ -38,7 +45,7 @@ export function assertPositiveNumber(value: unknown, fieldName: string) {
   }
 }
 
-export async function ensureGuestAndAccount(
+export async function createGuestAndAccounts(
   tx: Prisma.TransactionClient,
   guestId: string
 ) {
@@ -67,6 +74,32 @@ export async function ensureGuestAndAccount(
   ]);
 }
 
+export async function requireGuestAndAccounts(
+  tx: Prisma.TransactionClient,
+  guestId: string
+) {
+  const normalizedGuestId = guestId.trim();
+  if (!normalizedGuestId) {
+    throw new TradingError("guestId is required.");
+  }
+
+  const [guest, account, futuresAccount] = await Promise.all([
+    tx.guest.findUnique({ where: { id: normalizedGuestId }, select: { id: true } }),
+    tx.account.findUnique({ where: { guestId: normalizedGuestId }, select: { id: true } }),
+    tx.futuresAccount.findUnique({ where: { guestId: normalizedGuestId }, select: { id: true } })
+  ]);
+
+  if (!guest) {
+    throw new ApiError("GUEST_NOT_FOUND", "Guest not found.", 404);
+  }
+  if (!account) {
+    throw new ApiError("ACCOUNT_NOT_FOUND", "Account not found.", 404);
+  }
+  if (!futuresAccount) {
+    throw new ApiError("FUTURES_ACCOUNT_NOT_FOUND", "Futures account not found.", 404);
+  }
+}
+
 interface ApplyFillInput {
   guestId: string;
   symbol: string;
@@ -84,23 +117,16 @@ export async function applyFill(
 
   if (side === ORDER_SIDE.BUY) {
     const cost = qty * price;
-    await spendCashAtomic(tx, guestId, cost);
-    await incrementHoldingAtomic(tx, guestId, symbol, qty, price);
+    await spendSpotCash(tx, guestId, cost);
+    await incrementHoldingAndRecalcAvg(tx, guestId, symbol, qty, price);
   } else {
-    const holdingResult = await decrementHoldingAtomic(tx, guestId, symbol, qty);
+    const holdingResult = await decrementHolding(tx, guestId, symbol, qty);
     const costBasis = qty * holdingResult.avgPrice;
     const proceeds = qty * price;
     const realizedDelta = proceeds - costBasis;
 
-    await creditCashAtomic(tx, guestId, proceeds);
-    await addRealizedPnlAtomic(tx, guestId, realizedDelta);
-  }
-
-  if (orderId) {
-    await tx.order.update({
-      where: { id: orderId },
-      data: { status: ORDER_STATUS.FILLED }
-    });
+    await creditSpotCash(tx, guestId, proceeds);
+    await addSpotRealizedPnl(tx, guestId, realizedDelta);
   }
 
   const trade = await tx.trade.create({
@@ -115,38 +141,6 @@ export async function applyFill(
   });
 
   return trade;
-}
-
-export async function assertSufficientBalanceOrHolding(
-  tx: Prisma.TransactionClient,
-  guestId: string,
-  symbol: string,
-  side: OrderSide,
-  qty: number,
-  price: number
-) {
-  if (side === ORDER_SIDE.BUY) {
-    const cost = qty * price;
-    const account = await tx.account.findUnique({
-      where: { guestId },
-      select: { cashUSDT: true }
-    });
-    if (!account) {
-      throw new TradingError("Account not found for guestId.", 404);
-    }
-    if (account.cashUSDT < cost) {
-      throw new TradingError("Insufficient cashUSDT for BUY order.");
-    }
-    return;
-  }
-
-  const holding = await tx.holding.findUnique({
-    where: { guestId_symbol: { guestId, symbol } }
-  });
-
-  if (!holding || holding.qty < qty) {
-    throw new TradingError("Insufficient holding qty for SELL order.");
-  }
 }
 
 export function canLimitOrderFill(

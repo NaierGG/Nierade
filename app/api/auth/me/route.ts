@@ -3,22 +3,16 @@ import { getSessionFromRequest } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
   const session = await getSessionFromRequest(request);
-  if (!session) {
-    return NextResponse.json(
-      { user: null },
-      {
-        headers: {
-          "Cache-Control": "no-store"
-        }
-      }
-    );
-  }
-
   return NextResponse.json(
     {
-      user: {
-        id: session.user.id,
-        email: session.user.email
+      ok: true,
+      data: {
+        user: session
+          ? {
+              id: session.user.id,
+              email: session.user.email
+            }
+          : null
       }
     },
     {

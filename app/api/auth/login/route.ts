@@ -81,10 +81,6 @@ export async function POST(request: NextRequest) {
         id: user.id,
         email: user.email
       }
-    },
-    user: {
-      id: user.id,
-      email: user.email
     }
   });
   setSessionCookie(response, token, expiresAt);

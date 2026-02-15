@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/fill-limit-orders",
+      "schedule": "*/1 * * * *"
+    }
+  ]
+}

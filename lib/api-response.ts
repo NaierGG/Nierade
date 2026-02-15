@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { ZodError } from "next/dist/compiled/zod";
+import { ZodError } from "zod";
 
 export class ApiError extends Error {
   constructor(
